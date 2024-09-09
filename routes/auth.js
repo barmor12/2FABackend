@@ -5,14 +5,13 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const speakeasy = require("speakeasy");
 const qrcode = require("qrcode");
-const multer = require("multer");
 
-// רישום משתמש חדש
+// רישום משתמשים
 router.post("/register", async (req, res) => {
   try {
     const { email, password } = req.body;
 
-    // בדוק אם המשתמש כבר קיים
+    // בדיקה אם המשתמש כבר קיים
     let user = await User.findOne({ email });
     if (user) {
       return res.status(400).json({ msg: "User already exists" });
@@ -21,7 +20,7 @@ router.post("/register", async (req, res) => {
     // הצפנת הסיסמה
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // יצירת משתמש חדש ושמירתו במסד הנתונים
+    // יצירת משתמש חדש ושמירתו
     user = new User({ email, password: hashedPassword });
     await user.save();
 
@@ -31,23 +30,25 @@ router.post("/register", async (req, res) => {
   }
 });
 
-// התחברות משתמש
+// התחברות משתמשים
 router.post("/login", async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    // בדיקה אם המשתמש קיים
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(400).json({ msg: "User not found" });
     }
 
+    // בדיקת סיסמה
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ msg: "Invalid credentials" });
     }
 
+    // בדיקה אם 2FA מופעל
     if (user.twoFactorEnabled) {
-      // יצירת סוד חדש בכל התחברות
       const secret = speakeasy.generateSecret({
         name: `MyApp (${user.email})`,
       });
@@ -60,8 +61,10 @@ router.post("/login", async (req, res) => {
         res.json({ requires2FA: true, qrCode: data_url, userId: user._id });
       });
     } else {
-      // אם 2FA לא מופעל, מבצעים התחברות רגילה
-      const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+      // יצירת טוקן JWT ושליחתו ללקוח
+      const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+        expiresIn: "1h",
+      });
       res.json({ token, user: { id: user._id, email: user.email } });
     }
   } catch (err) {
@@ -69,41 +72,89 @@ router.post("/login", async (req, res) => {
   }
 });
 
-// אימות טוקן 2FA
+// אימות 2FA
 router.post("/2fa/verify", async (req, res) => {
   try {
-    const { userId, token } = req.body;
+    const { userId, token } = req.body; // הטוקן מהגוף של הבקשה הוא טוקן ה-2FA, לא ה-JWT
+    console.log("Verifying 2FA for user:", userId, "with token:", token);
+
     const user = await User.findById(userId);
     if (!user) return res.status(400).json({ msg: "User not found" });
 
     const verified = speakeasy.totp.verify({
-      secret: user.twoFactorSecret,
+      secret: user.twoFactorSecret, // סוד ה-2FA שנשמר בבסיס הנתונים
       encoding: "base32",
-      token: token,
+      token, // הקוד שהוזן מאפליקציית Google Authenticator
     });
 
     if (verified) {
-      // יצירת טוקן JWT חדש ושמירתו
-      const authToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+      const authToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
+        expiresIn: "1h",
+      });
       return res.json({ verified: true, token: authToken });
     } else {
-      return res.json({ verified: false });
+      return res
+        .status(400)
+        .json({ verified: false, msg: "Invalid 2FA token" });
     }
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// ביטול 2FA
+// החזרת פרטי המשתמש
+router.get("/user", async (req, res) => {
+  try {
+    const token = req.headers.authorization.split(" ")[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id).select("email"); // מחזיר רק את כתובת הדוא"ל של המשתמש
+
+    if (!user) {
+      return res.status(404).json({ msg: "User not found" });
+    }
+
+    res.json(user);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+router.post("/2fa/setup", async (req, res) => {
+  try {
+    const token = req.headers.authorization.split(" ")[1];
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id);
+
+    if (!user) {
+      return res.status(404).json({ msg: "User not found" });
+    }
+
+    // יצירת סוד חדש וקוד QR
+    const secret = speakeasy.generateSecret({ name: `MyApp (${user.email})` });
+    user.twoFactorSecret = secret.base32;
+    user.twoFactorEnabled = true;
+    await user.save();
+
+    // החזרת קוד QR לסריקה
+    qrcode.toDataURL(secret.otpauth_url, (err, data_url) => {
+      if (err) return res.status(500).json({ error: err.message });
+
+      res.json({ qrCode: data_url });
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 router.post("/2fa/disable", async (req, res) => {
   try {
     const token = req.headers.authorization.split(" ")[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
     const user = await User.findById(decoded.id);
-    if (!user) return res.status(404).json({ msg: "User not found" });
 
-    user.twoFactorSecret = "";
+    if (!user) {
+      return res.status(404).json({ msg: "User not found" });
+    }
+
+    user.twoFactorSecret = null;
     user.twoFactorEnabled = false;
     await user.save();
 
@@ -112,39 +163,5 @@ router.post("/2fa/disable", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// הגדרת multer להעלאת קבצים
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, "uploads/"); // התיקייה בה הקבצים יישמרו
-  },
-  filename: (req, file, cb) => {
-    cb(null, Date.now() + path.extname(file.originalname)); // שם הקובץ
-  },
-});
-
-const upload = multer({ storage });
-
-// נקודת קצה להעלאת תמונת פרופיל
-router.post(
-  "/upload-profile-image",
-  upload.single("profileImage"),
-  async (req, res) => {
-    try {
-      const token = req.headers.authorization.split(" ")[1];
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
-
-      const user = await User.findById(decoded.id);
-      if (!user) return res.status(404).json({ msg: "User not found" });
-
-      user.profileImage = `/uploads/${req.file.filename}`;
-      await user.save();
-
-      res.json({ profileImageUrl: user.profileImage });
-    } catch (err) {
-      res.status(500).json({ error: err.message });
-    }
-  }
-);
 
 module.exports = router;
