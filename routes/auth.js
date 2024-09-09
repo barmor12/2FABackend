@@ -47,7 +47,7 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ msg: "Invalid credentials" });
     }
 
-    // בדיקה אם 2FA מופעל
+    // אם 2FA מופעל, נדרוש אימות 2FA
     if (user.twoFactorEnabled) {
       const secret = speakeasy.generateSecret({
         name: `MyApp (${user.email})`,
@@ -61,7 +61,7 @@ router.post("/login", async (req, res) => {
         res.json({ requires2FA: true, qrCode: data_url, userId: user._id });
       });
     } else {
-      // יצירת טוקן JWT ושליחתו ללקוח
+      // אם 2FA לא מופעל, המשך כרגיל
       const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
         expiresIn: "1h",
       });
