@@ -17,6 +17,10 @@ const userSchema = new mongoose.Schema({
     type: Boolean,
     default: false,
   },
+  twoFactorVerified: {
+    type: Boolean,
+    default: false, // נתחיל בכך שהמשתמש לא עבר אימות 2FA עד שיעשה זאת
+  },
 });
 
 const User = mongoose.model("User", userSchema);

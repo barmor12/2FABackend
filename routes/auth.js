@@ -47,7 +47,11 @@ router.post("/login", async (req, res) => {
       return res.status(400).json({ msg: "Invalid credentials" });
     }
 
-    // אם 2FA מופעל, נדרוש אימות 2FA
+    // אתחול סטטוס 2FA בכל התחברות חדשה
+    user.twoFactorVerified = false;
+    await user.save();
+
+    // אם 2FA מופעל, דורשים אימות 2FA
     if (user.twoFactorEnabled) {
       const secret = speakeasy.generateSecret({
         name: `MyApp (${user.email})`,
@@ -61,7 +65,7 @@ router.post("/login", async (req, res) => {
         res.json({ requires2FA: true, qrCode: data_url, userId: user._id });
       });
     } else {
-      // אם 2FA לא מופעל, המשך כרגיל
+      // אם 2FA לא מופעל, יוצרים טוקן JWT ומחזירים ללקוח
       const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
         expiresIn: "1h",
       });
@@ -75,7 +79,7 @@ router.post("/login", async (req, res) => {
 // אימות 2FA
 router.post("/2fa/verify", async (req, res) => {
   try {
-    const { userId, token } = req.body; // הטוקן מהגוף של הבקשה הוא טוקן ה-2FA, לא ה-JWT
+    const { userId, token } = req.body;
     console.log("Verifying 2FA for user:", userId, "with token:", token);
 
     const user = await User.findById(userId);
@@ -88,6 +92,10 @@ router.post("/2fa/verify", async (req, res) => {
     });
 
     if (verified) {
+      // סימון המשתמש כמאומת ל-2FA
+      user.twoFactorVerified = true;
+      await user.save();
+
       const authToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
         expiresIn: "1h",
       });
@@ -118,6 +126,8 @@ router.get("/user", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// הפעלת 2FA
 router.post("/2fa/setup", async (req, res) => {
   try {
     const token = req.headers.authorization.split(" ")[1];
@@ -144,6 +154,8 @@ router.post("/2fa/setup", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// כיבוי 2FA
 router.post("/2fa/disable", async (req, res) => {
   try {
     const token = req.headers.authorization.split(" ")[1];
